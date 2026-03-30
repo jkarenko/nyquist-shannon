@@ -28,6 +28,125 @@ const evalSignal = (t, components) => {
   return val;
 };
 
+const makeEvaluator = ({ components }) => (t) => evalSignal(t, components);
+
+const makeInterpolatedEvaluator = (samples, evalSampleRate, duration) => {
+  const count = samples.length;
+  return (t) => {
+    const clamped = Math.max(0, Math.min(t, duration));
+    const idx = clamped * evalSampleRate;
+    const i0 = Math.floor(idx);
+    if (i0 >= count - 1) return samples[count - 1];
+    const frac = idx - i0;
+    return samples[i0] * (1 - frac) + samples[i0 + 1] * frac;
+  };
+};
+
+class WavError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const decodeWav = async (arrayBuffer) => {
+  let audioCtx;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch {
+    throw new WavError("NO_AUDIO_CONTEXT", "Browser does not support AudioContext");
+  }
+  try {
+    const buf = await audioCtx.decodeAudioData(arrayBuffer);
+    return {
+      samples: buf.getChannelData(0),
+      originalSampleRate: buf.sampleRate,
+      channelCount: buf.numberOfChannels,
+      duration: buf.duration,
+    };
+  } catch {
+    throw new WavError("CORRUPT", "Could not decode audio data");
+  } finally {
+    audioCtx.close();
+  }
+};
+
+const extractSegment = (decoded, targetDuration) => {
+  const { samples, originalSampleRate } = decoded;
+  const totalSamples = samples.length;
+  const minSamples = Math.floor(originalSampleRate * 0.5);
+  if (totalSamples < minSamples) {
+    throw new WavError("TOO_SHORT", "Audio file is too short");
+  }
+  const segmentSamples = Math.min(
+    totalSamples,
+    Math.floor(originalSampleRate * targetDuration)
+  );
+  return new Float32Array(samples.buffer, samples.byteOffset, segmentSamples);
+};
+
+const normalizeAmplitude = (samples) => {
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const abs = Math.abs(samples[i]);
+    if (abs > peak) peak = abs;
+  }
+  if (peak < 1e-6) {
+    throw new WavError("SILENCE", "Audio contains only silence");
+  }
+  const scale = 0.8 / peak;
+  const out = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    out[i] = samples[i] * scale;
+  }
+  return out;
+};
+
+const estimateMaxFreq = (samples, originalSampleRate) => {
+  let crossings = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if ((samples[i - 1] >= 0 && samples[i] < 0) || (samples[i - 1] < 0 && samples[i] >= 0)) {
+      crossings++;
+    }
+  }
+  const durationSec = samples.length / originalSampleRate;
+  const zcRate = crossings / (2 * durationSec);
+  const ratio = zcRate / (originalSampleRate / 2);
+  const visualFreq = 0.5 + ratio * 4.5;
+  return Math.max(0.5, Math.min(5, visualFreq));
+};
+
+const EVAL_SAMPLE_RATE = 100;
+
+const downsampleForEval = (normalizedSamples, originalSampleRate, targetDuration) => {
+  const sourceDuration = normalizedSamples.length / originalSampleRate;
+  const actualDuration = Math.min(sourceDuration, targetDuration);
+  const outCount = Math.floor(actualDuration * EVAL_SAMPLE_RATE);
+  const out = new Float32Array(outCount);
+  for (let i = 0; i < outCount; i++) {
+    const t = i / EVAL_SAMPLE_RATE;
+    const srcIdx = t * originalSampleRate;
+    const i0 = Math.floor(srcIdx);
+    const i1 = Math.min(i0 + 1, normalizedSamples.length - 1);
+    const frac = srcIdx - i0;
+    out[i] = normalizedSamples[i0] * (1 - frac) + normalizedSamples[i1] * frac;
+  }
+  return { samples: out, duration: actualDuration };
+};
+
+const processWavFile = async (file) => {
+  if (!file.name.toLowerCase().endsWith(".wav") && !file.type.match(/^audio\/(wav|x-wav|wave)$/)) {
+    throw new WavError("WRONG_TYPE", "Not a WAV file");
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const decoded = await decodeWav(arrayBuffer);
+  const segment = extractSegment(decoded, 3);
+  const normalized = normalizeAmplitude(segment);
+  const maxFreq = estimateMaxFreq(normalized, decoded.originalSampleRate);
+  const { samples, duration } = downsampleForEval(normalized, decoded.originalSampleRate, 3);
+  return { samples, evalSampleRate: EVAL_SAMPLE_RATE, maxFreq, duration, fileName: file.name };
+};
+
 const SunIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="4" />
@@ -71,6 +190,18 @@ const i18n = {
     themeDark: "Switch to dark theme",
     langFi: "Switch to Finnish",
     langEn: "Switch to English",
+    uploadPrompt: "Drop a WAV file here or click to browse",
+    uploadDragActive: "Drop to upload",
+    uploadProcessing: "Decoding WAV\u2026",
+    uploadClear: "Clear uploaded file",
+    uploadAriaLabel: "Upload a WAV file",
+    uploadRetry: "Try another file.",
+    err_WRONG_TYPE: "Only WAV files are supported. Choose a .wav file.",
+    err_TOO_SHORT: "File is too short. Upload at least 1 second of audio.",
+    err_SILENCE: "This file contains only silence. Try a different recording.",
+    err_CORRUPT: "Could not read this file. It may be corrupted or use an unsupported format.",
+    err_NO_AUDIO_CONTEXT: "Your browser does not support audio decoding. Try a current version of Firefox, Chrome, or Safari.",
+    infoSourceUploaded: (f) => `is the uploaded WAV signal (estimated highest frequency ${f} Hz).`,
   },
   fi: {
     title: "Nyquistin\u2013Shannonin n\u00e4ytteenottoteoreema",
@@ -94,6 +225,18 @@ const i18n = {
     themeDark: "Vaihda tummaan teemaan",
     langFi: "Vaihda suomeksi",
     langEn: "Vaihda englanniksi",
+    uploadPrompt: "Pudota WAV-tiedosto t\u00e4h\u00e4n tai napsauta selataksesi",
+    uploadDragActive: "Pudota ladataksesi",
+    uploadProcessing: "Puretaan WAV-tiedostoa\u2026",
+    uploadClear: "Poista ladattu tiedosto",
+    uploadAriaLabel: "Lataa WAV-tiedosto",
+    uploadRetry: "Kokeile toista tiedostoa.",
+    err_WRONG_TYPE: "Vain WAV-tiedostot ovat tuettuja. Valitse .wav-tiedosto.",
+    err_TOO_SHORT: "Tiedosto on liian lyhyt. Lataa v\u00e4hint\u00e4\u00e4n 1 sekunti \u00e4\u00e4nt\u00e4.",
+    err_SILENCE: "T\u00e4m\u00e4 tiedosto sis\u00e4lt\u00e4\u00e4 vain hiljaisuutta. Kokeile toista tallennetta.",
+    err_CORRUPT: "Tiedostoa ei voitu lukea. Se voi olla vioittunut tai k\u00e4ytt\u00e4\u00e4 tukeamatonta muotoa.",
+    err_NO_AUDIO_CONTEXT: "Selaimesi ei tue \u00e4\u00e4nen purkamista. Kokeile uusinta Firefox-, Chrome- tai Safari-versiota.",
+    infoSourceUploaded: (f) => `on ladattu WAV-signaali (arvioitu korkein taajuus ${f} Hz).`,
   },
 };
 
@@ -153,16 +296,22 @@ const focusHandlers = (accentColor) => ({
 
 export default function NyquistDemo() {
   const canvasRef = useRef(null);
+  const evaluatorRef = useRef(null);
+  const fileInputRef = useRef(null);
   const [signal, setSignal] = useState(() => generateSignal());
   const [sampleRate, setSampleRate] = useState(4);
   const [duration] = useState(3);
   const [lang, setLang] = useState("en");
   const [mode, setMode] = useState("dark");
+  const [uploadState, setUploadState] = useState({ status: "idle", fileName: null, errorCode: null });
+  const [uploadedMaxFreq, setUploadedMaxFreq] = useState(null);
 
   const loc = i18n[lang];
   const th = themes[mode];
 
-  const nyquistRate = signal.maxFreq * 2;
+  const activeMaxFreq = uploadedMaxFreq ?? signal.maxFreq;
+  const nyquistRate = activeMaxFreq * 2;
+  const sliderMax = Math.max(40, Math.ceil(nyquistRate * 2 + 2));
   const isSufficient = sampleRate >= nyquistRate - 0.01;
   const status = isSufficient ? "converged" : "under";
 
@@ -220,13 +369,15 @@ export default function NyquistDemo() {
       ctx.fillText(tt.toFixed(1) + "s", toX(tt), H - padB + 14);
     }
 
+    const evaluate = evaluatorRef.current || makeEvaluator(signal);
+
     const step = duration / (plotW * 2);
     ctx.beginPath();
     ctx.strokeStyle = th.originalWave;
     ctx.lineWidth = 3;
     for (let tt = 0; tt <= duration; tt += step) {
       const x = toX(tt);
-      const y = toY(evalSignal(tt, signal.components));
+      const y = toY(evaluate(tt));
       tt === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
     ctx.stroke();
@@ -239,7 +390,7 @@ export default function NyquistDemo() {
     const allSampleTimes = [];
     for (let ii = startSample; ii <= endSample; ii++) {
       allSampleTimes.push(ii * samplePeriod);
-      allSamples.push(evalSignal(ii * samplePeriod, signal.components));
+      allSamples.push(evaluate(ii * samplePeriod));
     }
 
     const reconstructPadded = (tt) => {
@@ -266,7 +417,7 @@ export default function NyquistDemo() {
       const tt = ii * samplePeriod;
       if (tt > duration) break;
       const x = toX(tt);
-      const y = toY(evalSignal(tt, signal.components));
+      const y = toY(evaluate(tt));
       ctx.beginPath();
       ctx.strokeStyle = th.stemColor;
       ctx.lineWidth = 1;
@@ -303,7 +454,34 @@ export default function NyquistDemo() {
     return () => window.removeEventListener("resize", onResize);
   }, [draw]);
 
-  const randomize = () => setSignal(generateSignal());
+  const handleFile = async (file) => {
+    if (!file) return;
+    setUploadState({ status: "processing", fileName: file.name, errorCode: null });
+    try {
+      const result = await processWavFile(file);
+      evaluatorRef.current = makeInterpolatedEvaluator(result.samples, result.evalSampleRate, result.duration);
+      setUploadedMaxFreq(result.maxFreq);
+      setSampleRate(Math.max(1, result.maxFreq * 1.5));
+      setUploadState({ status: "loaded", fileName: result.fileName, errorCode: null });
+    } catch (err) {
+      evaluatorRef.current = null;
+      setUploadedMaxFreq(null);
+      const code = err instanceof WavError ? err.code : "CORRUPT";
+      setUploadState({ status: "error", fileName: file.name, errorCode: code });
+    }
+  };
+
+  const clearUpload = () => {
+    evaluatorRef.current = null;
+    setUploadedMaxFreq(null);
+    setUploadState({ status: "idle", fileName: null, errorCode: null });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const randomize = () => {
+    clearUpload();
+    setSignal(generateSignal());
+  };
 
   const statusColor = isSufficient ? th.success : th.error;
   const statusBg = isSufficient ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)";
@@ -375,18 +553,102 @@ export default function NyquistDemo() {
         <p style={{
           fontSize: 13,
           color: th.textFaint,
-          marginBottom: 24,
+          marginBottom: 16,
           lineHeight: 1.6,
         }}>
           {loc.subtitle}
         </p>
 
+        {/* Upload zone */}
+        {uploadState.status === "loaded" ? (
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 14px",
+            marginBottom: 16,
+            border: `1px solid ${th.border}`,
+            borderRadius: 6,
+            fontSize: 12,
+            color: th.textMuted,
+            fontFamily: "inherit",
+          }}>
+            <span style={{ color: th.accent, fontWeight: 500 }}>{uploadState.fileName}</span>
+            <span style={{ flex: 1 }} />
+            <button
+              onClick={clearUpload}
+              aria-label={loc.uploadClear || "Clear uploaded file"}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: th.textFaint,
+                cursor: "pointer",
+                fontSize: 14,
+                padding: "2px 6px",
+                borderRadius: 4,
+                fontFamily: "inherit",
+                lineHeight: 1,
+              }}
+              {...focus}
+            >
+              &times;
+            </button>
+          </div>
+        ) : (
+          <label
+            htmlFor="wav-upload"
+            onDragEnter={(e) => { e.preventDefault(); setUploadState((s) => ({ ...s, status: "drag-active" })); }}
+            onDragOver={(e) => { e.preventDefault(); }}
+            onDragLeave={(e) => { e.preventDefault(); setUploadState((s) => s.status === "drag-active" ? { ...s, status: "idle" } : s); }}
+            onDrop={(e) => { e.preventDefault(); setUploadState((s) => ({ ...s, status: "idle" })); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              minHeight: 44,
+              padding: "12px 16px",
+              marginBottom: 16,
+              border: `2px dashed ${uploadState.status === "drag-active" ? th.accent : uploadState.status === "error" ? th.error : th.border}`,
+              borderRadius: 8,
+              background: uploadState.status === "drag-active" ? (mode === "dark" ? "rgba(245,158,11,0.06)" : "rgba(180,83,9,0.06)") : "transparent",
+              cursor: uploadState.status === "processing" ? "default" : "pointer",
+              transition: "border-color 0.2s, background 0.2s",
+              fontFamily: "inherit",
+            }}
+          >
+            <input
+              ref={fileInputRef}
+              id="wav-upload"
+              type="file"
+              accept=".wav,audio/wav,audio/x-wav,audio/wave"
+              onChange={(e) => { const f = e.target.files[0]; if (f) handleFile(f); }}
+              disabled={uploadState.status === "processing"}
+              aria-label={loc.uploadAriaLabel || "Upload a WAV file"}
+              style={{ position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden" }}
+            />
+            {uploadState.status === "processing" ? (
+              <span style={{ fontSize: 12, color: th.textMuted }}>{loc.uploadProcessing || "Decoding WAV\u2026"}</span>
+            ) : uploadState.status === "error" ? (
+              <span style={{ fontSize: 12, color: th.errorText }}>
+                {loc[`err_${uploadState.errorCode}`] || loc.errCorrupt || "Could not read this file."}
+                {" "}
+                <span style={{ color: th.textFaint }}>{loc.uploadRetry || "Try another file."}</span>
+              </span>
+            ) : (
+              <span style={{ fontSize: 12, color: th.textFaint }}>{loc.uploadPrompt || "Drop a WAV file here or click to browse"}</span>
+            )}
+          </label>
+        )}
+
         <canvas
           ref={canvasRef}
           role="img"
-          aria-label={isSufficient
-            ? "Waveform visualization. Perfect reconstruction achieved."
-            : "Waveform visualization. Aliasing \u2014 signal cannot be reconstructed."}
+          aria-label={
+            (uploadState.status === "loaded" ? `Showing uploaded file ${uploadState.fileName}. ` : "") +
+            (isSufficient
+              ? "Waveform visualization. Perfect reconstruction achieved."
+              : "Waveform visualization. Aliasing \u2014 signal cannot be reconstructed.")
+          }
           style={{
             width: "100%",
             height: 320,
@@ -470,14 +732,14 @@ export default function NyquistDemo() {
               {loc.sampleRate}: <span style={{ color: th.accent, fontWeight: 600 }}>{sampleRate.toFixed(1)} Hz</span>
             </label>
             <span style={{ fontSize: 11, color: th.textFaintest }}>
-              f<sub>max</sub> = {signal.maxFreq.toFixed(1)} Hz &rarr; {loc.nyquistLabel} = {nyquistRate.toFixed(1)} Hz
+              f<sub>max</sub> = {activeMaxFreq.toFixed(1)} Hz &rarr; {loc.nyquistLabel} = {nyquistRate.toFixed(1)} Hz
             </span>
           </div>
           <input
             id="sample-rate-slider"
             type="range"
             min={1}
-            max={40}
+            max={sliderMax}
             step={0.2}
             value={sampleRate}
             onChange={(e) => setSampleRate(parseFloat(e.target.value))}
@@ -500,7 +762,7 @@ export default function NyquistDemo() {
             }}>
               <span aria-hidden="true">&#9650;</span> {nyquistRate.toFixed(1)} Hz (Nyquist)
             </span>
-            <span>40 Hz</span>
+            <span>{sliderMax} Hz</span>
           </div>
         </div>
 
@@ -517,7 +779,9 @@ export default function NyquistDemo() {
         }}>
           <div>
             <span style={{ color: th.textMuted }}>{loc.infoGray}</span>
-            {" "}{loc.infoOriginal(signal.components.length, signal.maxFreq.toFixed(1))}
+            {" "}{uploadState.status === "loaded"
+              ? loc.infoSourceUploaded(activeMaxFreq.toFixed(1))
+              : loc.infoOriginal(signal.components.length, signal.maxFreq.toFixed(1))}
             {" "}<span style={{ color: th.textMuted }}>{loc.infoReconstructed(!isSufficient ? loc.red : loc.orange)}</span>
             {" "}{loc.infoRest(nyquistRate.toFixed(1))}
             {!isSufficient && (

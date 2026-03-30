@@ -1,0 +1,27 @@
+{
+  "id": "pof-w8b3",
+  "projectId": "proj-7d3a",
+  "type": "story",
+  "currentPhase": "design",
+  "status": "in_progress",
+  "lastCheckpoint": null,
+  "blockers": [],
+  "verbose": false,
+  "createdAt": "2026-03-30T19:00:00Z",
+  "lastActivity": "2026-03-30T19:00:00Z",
+  "project": "Nyquist-Shannon Interactive Demo",
+  "story": {
+    "title": "WAV file upload for custom waveform visualization",
+    "who": "user",
+    "what": "Upload a WAV file to visualize how Nyquist-Shannon sampling theorems apply to their own waveform",
+    "why": "To see the theorems demonstrated on real-world audio, not just generated signals",
+    "criteria": [
+      "User can upload a WAV file via the UI",
+      "Uploaded waveform is decoded and displayed",
+      "Sampling/reconstruction visualizations apply to the uploaded waveform",
+      "Invalid files are handled gracefully with clear feedback"
+    ],
+    "slug": "wav-upload",
+    "quick": false
+  }
+}
