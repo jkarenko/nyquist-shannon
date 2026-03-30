@@ -28,6 +28,26 @@ const evalSignal = (t, components) => {
   return val;
 };
 
+const SunIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="4" />
+    <line x1="12" y1="2" x2="12" y2="5" />
+    <line x1="12" y1="19" x2="12" y2="22" />
+    <line x1="4.22" y1="4.22" x2="6.34" y2="6.34" />
+    <line x1="17.66" y1="17.66" x2="19.78" y2="19.78" />
+    <line x1="2" y1="12" x2="5" y2="12" />
+    <line x1="19" y1="12" x2="22" y2="12" />
+    <line x1="4.22" y1="19.78" x2="6.34" y2="17.66" />
+    <line x1="17.66" y1="6.34" x2="19.78" y2="4.22" />
+  </svg>
+);
+
+const MoonIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+  </svg>
+);
+
 const i18n = {
   en: {
     title: "Nyquist\u2013Shannon Sampling Theorem",
@@ -47,6 +67,10 @@ const i18n = {
     note: "Note: right at the Nyquist threshold, the visual reconstruction may not look perfectly aligned. This is a computational artifact \u2014 the sinc interpolation formula sums infinitely many terms, but this demo uses a finite number. The theorem itself guarantees exact reconstruction at any rate \u22652\u00d7f",
     red: "red",
     orange: "orange",
+    themeLight: "Switch to light theme",
+    themeDark: "Switch to dark theme",
+    langFi: "Switch to Finnish",
+    langEn: "Switch to English",
   },
   fi: {
     title: "Nyquistin\u2013Shannonin n\u00e4ytteenottoteoreema",
@@ -66,6 +90,10 @@ const i18n = {
     note: "Huom: juuri Nyquist-rajalla visuaalinen rekonstruktio ei v\u00e4ltt\u00e4m\u00e4tt\u00e4 n\u00e4yt\u00e4 t\u00e4ydelliselt\u00e4. T\u00e4m\u00e4 on laskennallinen artefakti \u2014 sinc-interpolaatiokaava summaa \u00e4\u00e4rett\u00f6m\u00e4n m\u00e4\u00e4r\u00e4n termej\u00e4, mutta t\u00e4m\u00e4 demo k\u00e4ytt\u00e4\u00e4 \u00e4\u00e4rellist\u00e4 m\u00e4\u00e4r\u00e4\u00e4. Teoreema takaa tarkan rekonstruktion mill\u00e4 tahansa nopeudella \u22652\u00d7f",
     red: "punainen",
     orange: "oranssi",
+    themeLight: "Vaihda vaaleaan teemaan",
+    themeDark: "Vaihda tummaan teemaan",
+    langFi: "Vaihda suomeksi",
+    langEn: "Vaihda englanniksi",
   },
 };
 
@@ -77,34 +105,51 @@ const themes = {
     textMuted: "#888",
     textFaint: "#666",
     textFaintest: "#555",
-    gridLine: "#1a1a2e",
-    border: "#1a1a2e",
-    infoBg: "#0d0d14",
-    originalWave: "rgba(255,255,255,0.18)",
-    legendText: "rgba(255,255,255,0.4)",
+    gridLine: "#16161e",
+    border: "#16161e",
+    infoBg: "#0e0e12",
+    originalWave: "rgba(255,255,255,0.22)",
+    legendText: "rgba(255,255,255,0.6)",
     stemColor: "rgba(255,255,255,0.08)",
     dotFill: "#111",
     btnBorder: "#333",
-    noteColor: "#555",
+    noteColor: "#888",
+    accent: "#f59e0b",
+    accentMuted: "#f59e0b",
+    success: "#22c55e",
+    error: "#ef4444",
+    errorText: "#ef4444",
   },
   light: {
     bg: "#f5f5f0",
-    canvasBg: "#ffffff",
+    canvasBg: "#fafaf8",
     text: "#1a1a1a",
     textMuted: "#555",
     textFaint: "#777",
-    textFaintest: "#999",
+    textFaintest: "#6e6e6e",
     gridLine: "#e0e0e0",
     border: "#d0d0d0",
-    infoBg: "#eaeae5",
+    infoBg: "#e4e4de",
     originalWave: "rgba(0,0,0,0.15)",
-    legendText: "rgba(0,0,0,0.45)",
+    legendText: "rgba(0,0,0,0.6)",
     stemColor: "rgba(0,0,0,0.06)",
     dotFill: "#fff",
     btnBorder: "#bbb",
-    noteColor: "#999",
+    noteColor: "#6b7280",
+    accent: "#b45309",
+    accentMuted: "#92400e",
+    success: "#16a34a",
+    error: "#dc2626",
+    errorText: "#dc2626",
   },
 };
+
+const FONT_STACK = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', 'Consolas', 'Menlo', monospace";
+
+const focusHandlers = (accentColor) => ({
+  onFocus: (e) => { e.target.style.outline = `2px solid ${accentColor}`; e.target.style.outlineOffset = "2px"; },
+  onBlur: (e) => { e.target.style.outline = "none"; },
+});
 
 export default function NyquistDemo() {
   const canvasRef = useRef(null);
@@ -120,6 +165,9 @@ export default function NyquistDemo() {
   const nyquistRate = signal.maxFreq * 2;
   const isSufficient = sampleRate >= nyquistRate - 0.01;
   const status = isSufficient ? "converged" : "under";
+
+  const waveColor = isSufficient ? th.accent : th.error;
+  const focus = focusHandlers(th.accent);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -166,7 +214,7 @@ export default function NyquistDemo() {
     }
 
     ctx.fillStyle = th.textFaintest;
-    ctx.font = "11px 'SF Mono', monospace";
+    ctx.font = `10px ${FONT_STACK}`;
     ctx.textAlign = "center";
     for (let tt = 0; tt <= duration; tt += 0.5) {
       ctx.fillText(tt.toFixed(1) + "s", toX(tt), H - padB + 14);
@@ -202,9 +250,9 @@ export default function NyquistDemo() {
       return val;
     };
 
-    const waveColor = isSufficient ? "#f59e0b" : "#ef4444";
+    const canvasWaveColor = isSufficient ? th.accent : th.error;
     ctx.beginPath();
-    ctx.strokeStyle = waveColor;
+    ctx.strokeStyle = canvasWaveColor;
     ctx.lineWidth = 2;
     for (let tt = 0; tt <= duration; tt += step) {
       const x = toX(tt);
@@ -227,14 +275,14 @@ export default function NyquistDemo() {
       ctx.stroke();
       ctx.beginPath();
       ctx.fillStyle = th.dotFill;
-      ctx.strokeStyle = waveColor;
+      ctx.strokeStyle = canvasWaveColor;
       ctx.lineWidth = 2;
       ctx.arc(x, y, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
 
-    ctx.font = "12px 'SF Mono', monospace";
+    ctx.font = `12px ${FONT_STACK}`;
     ctx.textAlign = "left";
     const legX = padL + 12;
     const legY = padT + 16;
@@ -242,11 +290,11 @@ export default function NyquistDemo() {
     ctx.fillRect(legX - 16, legY - 4, 10, 3);
     ctx.fillStyle = th.legendText;
     ctx.fillText(loc.legendOriginal, legX, legY);
-    ctx.fillStyle = waveColor;
+    ctx.fillStyle = canvasWaveColor;
     ctx.fillRect(legX - 16, legY + 16, 10, 3);
     ctx.fillStyle = th.legendText;
     ctx.fillText(loc.legendReconstructed, legX, legY + 20);
-  }, [signal, sampleRate, duration, status, th, loc]);
+  }, [signal, sampleRate, duration, isSufficient, th, loc]);
 
   useEffect(() => {
     draw();
@@ -257,9 +305,9 @@ export default function NyquistDemo() {
 
   const randomize = () => setSignal(generateSignal());
 
-  const statusColor = status === "converged" ? "#22c55e" : "#ef4444";
-  const statusBg = status === "converged" ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)";
-  const statusBorder = status === "converged" ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)";
+  const statusColor = isSufficient ? th.success : th.error;
+  const statusBg = isSufficient ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)";
+  const statusBorder = isSufficient ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)";
 
   const smallBtn = {
     padding: "4px 10px",
@@ -272,6 +320,9 @@ export default function NyquistDemo() {
     fontFamily: "inherit",
     transition: "all 0.2s",
     lineHeight: "1.4",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
   };
 
   return (
@@ -279,7 +330,7 @@ export default function NyquistDemo() {
       background: th.bg,
       minHeight: "100vh",
       color: th.text,
-      fontFamily: "'SF Mono', 'Fira Code', 'JetBrains Mono', monospace",
+      fontFamily: FONT_STACK,
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
@@ -287,42 +338,55 @@ export default function NyquistDemo() {
       transition: "background 0.3s, color 0.3s",
     }}>
       <div style={{ maxWidth: 800, width: "100%" }}>
-        {/* Header */}
         <div style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "flex-start",
-          marginBottom: 4,
+          marginBottom: 8,
         }}>
           <h1 style={{
-            fontSize: 18,
+            fontSize: 20,
             fontWeight: 600,
-            letterSpacing: "0.04em",
-            color: "#f59e0b",
+            letterSpacing: "0.05em",
+            color: th.accent,
             margin: 0,
           }}>
             {loc.title}
           </h1>
           <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: 12 }}>
-            <button onClick={() => setLang(lang === "en" ? "fi" : "en")} style={smallBtn}>
+            <button
+              onClick={() => setLang(lang === "en" ? "fi" : "en")}
+              aria-label={lang === "en" ? loc.langFi : loc.langEn}
+              style={smallBtn}
+              {...focus}
+            >
               {lang === "en" ? "FI" : "EN"}
             </button>
-            <button onClick={() => setMode(mode === "dark" ? "light" : "dark")} style={smallBtn}>
-              {mode === "dark" ? "\u2600\uFE0F" : "\uD83C\uDF19"}
+            <button
+              onClick={() => setMode(mode === "dark" ? "light" : "dark")}
+              aria-label={mode === "dark" ? loc.themeLight : loc.themeDark}
+              style={smallBtn}
+              {...focus}
+            >
+              {mode === "dark" ? <SunIcon /> : <MoonIcon />}
             </button>
           </div>
         </div>
         <p style={{
-          fontSize: 12,
+          fontSize: 13,
           color: th.textFaint,
           marginBottom: 24,
-          lineHeight: 1.5,
+          lineHeight: 1.6,
         }}>
           {loc.subtitle}
         </p>
 
         <canvas
           ref={canvasRef}
+          role="img"
+          aria-label={isSufficient
+            ? "Waveform visualization. Perfect reconstruction achieved."
+            : "Waveform visualization. Aliasing \u2014 signal cannot be reconstructed."}
           style={{
             width: "100%",
             height: 320,
@@ -331,25 +395,28 @@ export default function NyquistDemo() {
           }}
         />
 
-        {/* Controls row */}
         <div style={{
-          marginTop: 20,
+          marginTop: 24,
           display: "flex",
           alignItems: "center",
           gap: 16,
           flexWrap: "wrap",
         }}>
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 14px",
-            background: statusBg,
-            border: `1px solid ${statusBorder}`,
-            borderRadius: 6,
-            transition: "all 0.3s ease",
-          }}>
-            <div style={{
+          <div
+            aria-live="polite"
+            aria-atomic="true"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 14px",
+              background: statusBg,
+              border: `1px solid ${statusBorder}`,
+              borderRadius: 6,
+              transition: "all 0.3s ease",
+            }}
+          >
+            <div aria-hidden="true" style={{
               width: 10,
               height: 10,
               borderRadius: "50%",
@@ -366,6 +433,7 @@ export default function NyquistDemo() {
 
           <button
             onClick={randomize}
+            aria-label={loc.randomize}
             style={{
               padding: "8px 16px",
               background: "transparent",
@@ -378,19 +446,19 @@ export default function NyquistDemo() {
               transition: "all 0.2s",
             }}
             onMouseEnter={(e) => {
-              e.target.style.borderColor = "#f59e0b";
-              e.target.style.color = "#f59e0b";
+              e.target.style.borderColor = th.accent;
+              e.target.style.color = th.accent;
             }}
             onMouseLeave={(e) => {
               e.target.style.borderColor = th.btnBorder;
               e.target.style.color = th.textMuted;
             }}
+            {...focus}
           >
             {loc.randomize}
           </button>
         </div>
 
-        {/* Slider */}
         <div style={{ marginTop: 20 }}>
           <div style={{
             display: "flex",
@@ -398,21 +466,24 @@ export default function NyquistDemo() {
             alignItems: "baseline",
             marginBottom: 8,
           }}>
-            <label style={{ fontSize: 12, color: th.textMuted }}>
-              {loc.sampleRate}: <span style={{ color: "#f59e0b", fontWeight: 600 }}>{sampleRate.toFixed(1)} Hz</span>
+            <label htmlFor="sample-rate-slider" style={{ fontSize: 12, color: th.textMuted }}>
+              {loc.sampleRate}: <span style={{ color: th.accent, fontWeight: 600 }}>{sampleRate.toFixed(1)} Hz</span>
             </label>
             <span style={{ fontSize: 11, color: th.textFaintest }}>
               f<sub>max</sub> = {signal.maxFreq.toFixed(1)} Hz &rarr; {loc.nyquistLabel} = {nyquistRate.toFixed(1)} Hz
             </span>
           </div>
           <input
+            id="sample-rate-slider"
             type="range"
             min={1}
             max={40}
             step={0.2}
             value={sampleRate}
             onChange={(e) => setSampleRate(parseFloat(e.target.value))}
-            style={{ width: "100%", accentColor: "#f59e0b", cursor: "pointer" }}
+            aria-valuetext={`${sampleRate.toFixed(1)} Hz`}
+            style={{ width: "100%", accentColor: th.accent, cursor: "pointer" }}
+            {...focus}
           />
           <div style={{
             display: "flex",
@@ -423,39 +494,39 @@ export default function NyquistDemo() {
           }}>
             <span>1 Hz</span>
             <span style={{
-              color: !isSufficient ? "#f59e0b" : "#22c55e44",
+              color: !isSufficient ? th.accent : `${th.success}44`,
               fontWeight: !isSufficient ? 600 : 400,
               transition: "all 0.3s",
             }}>
-              &#9650; {nyquistRate.toFixed(1)} Hz (Nyquist)
+              <span aria-hidden="true">&#9650;</span> {nyquistRate.toFixed(1)} Hz (Nyquist)
             </span>
             <span>40 Hz</span>
           </div>
         </div>
 
-        {/* Info */}
         <div style={{
           marginTop: 24,
           padding: 16,
           background: th.infoBg,
           border: `1px solid ${th.border}`,
           borderRadius: 8,
-          fontSize: 12,
+          fontSize: 13,
           color: th.textFaint,
-          lineHeight: 1.7,
+          lineHeight: 1.75,
           transition: "background 0.3s",
         }}>
-          <span style={{ color: th.textMuted }}>{loc.infoGray}</span>
-          {" "}{loc.infoOriginal(signal.components.length, signal.maxFreq.toFixed(1))}
-          {" "}<span style={{ color: th.textMuted }}>{loc.infoReconstructed(!isSufficient ? loc.red : loc.orange)}</span>
-          {" "}{loc.infoRest(nyquistRate.toFixed(1))}
-          {!isSufficient && (
-            <span style={{ color: "#ef4444" }}> {loc.underMsg}</span>
-          )}
-          <br /><br />
-          <span style={{ color: th.noteColor, fontSize: 11 }}>
+          <div>
+            <span style={{ color: th.textMuted }}>{loc.infoGray}</span>
+            {" "}{loc.infoOriginal(signal.components.length, signal.maxFreq.toFixed(1))}
+            {" "}<span style={{ color: th.textMuted }}>{loc.infoReconstructed(!isSufficient ? loc.red : loc.orange)}</span>
+            {" "}{loc.infoRest(nyquistRate.toFixed(1))}
+            {!isSufficient && (
+              <span style={{ color: th.errorText }}> {loc.underMsg}</span>
+            )}
+          </div>
+          <div style={{ marginTop: 12, color: th.noteColor, fontSize: 11 }}>
             {loc.note}<sub>max</sub>.
-          </span>
+          </div>
         </div>
       </div>
     </div>
