@@ -71,18 +71,12 @@ const decodeWav = async (arrayBuffer) => {
   }
 };
 
-const extractSegment = (decoded, targetDuration) => {
+const validateLength = (decoded) => {
   const { samples, originalSampleRate } = decoded;
-  const totalSamples = samples.length;
   const minSamples = Math.floor(originalSampleRate * 0.5);
-  if (totalSamples < minSamples) {
+  if (samples.length < minSamples) {
     throw new WavError("TOO_SHORT", "Audio file is too short");
   }
-  const segmentSamples = Math.min(
-    totalSamples,
-    Math.floor(originalSampleRate * targetDuration)
-  );
-  return new Float32Array(samples.buffer, samples.byteOffset, segmentSamples);
 };
 
 const normalizeAmplitude = (samples) => {
@@ -102,49 +96,27 @@ const normalizeAmplitude = (samples) => {
   return out;
 };
 
-const estimateMaxFreq = (samples, originalSampleRate) => {
-  let crossings = 0;
-  for (let i = 1; i < samples.length; i++) {
-    if ((samples[i - 1] >= 0 && samples[i] < 0) || (samples[i - 1] < 0 && samples[i] >= 0)) {
-      crossings++;
-    }
-  }
-  const durationSec = samples.length / originalSampleRate;
-  const zcRate = crossings / (2 * durationSec);
-  const ratio = zcRate / (originalSampleRate / 2);
-  const visualFreq = 0.5 + ratio * 4.5;
-  return Math.max(0.5, Math.min(5, visualFreq));
-};
-
-const EVAL_SAMPLE_RATE = 100;
-
-const downsampleForEval = (normalizedSamples, originalSampleRate, targetDuration) => {
-  const sourceDuration = normalizedSamples.length / originalSampleRate;
-  const actualDuration = Math.min(sourceDuration, targetDuration);
-  const outCount = Math.floor(actualDuration * EVAL_SAMPLE_RATE);
-  const out = new Float32Array(outCount);
-  for (let i = 0; i < outCount; i++) {
-    const t = i / EVAL_SAMPLE_RATE;
-    const srcIdx = t * originalSampleRate;
-    const i0 = Math.floor(srcIdx);
-    const i1 = Math.min(i0 + 1, normalizedSamples.length - 1);
-    const frac = srcIdx - i0;
-    out[i] = normalizedSamples[i0] * (1 - frac) + normalizedSamples[i1] * frac;
-  }
-  return { samples: out, duration: actualDuration };
-};
-
 const processWavFile = async (file) => {
   if (!file.name.toLowerCase().endsWith(".wav") && !file.type.match(/^audio\/(wav|x-wav|wave)$/)) {
     throw new WavError("WRONG_TYPE", "Not a WAV file");
   }
   const arrayBuffer = await file.arrayBuffer();
   const decoded = await decodeWav(arrayBuffer);
-  const segment = extractSegment(decoded, 3);
-  const normalized = normalizeAmplitude(segment);
-  const maxFreq = estimateMaxFreq(normalized, decoded.originalSampleRate);
-  const { samples, duration } = downsampleForEval(normalized, decoded.originalSampleRate, 3);
-  return { samples, evalSampleRate: EVAL_SAMPLE_RATE, maxFreq, duration, fileName: file.name };
+  validateLength(decoded);
+  const normalized = normalizeAmplitude(decoded.samples.slice());
+  const fullDuration = normalized.length / decoded.originalSampleRate;
+  return {
+    samples: normalized,
+    sampleRate: decoded.originalSampleRate,
+    maxFreq: decoded.originalSampleRate / 2,
+    fullDuration,
+    fileName: file.name,
+  };
+};
+
+const formatHz = (hz) => {
+  if (hz >= 1000) return `${(hz / 1000).toFixed(1)} kHz`;
+  return `${hz.toFixed(1)} Hz`;
 };
 
 const SunIcon = () => (
@@ -201,7 +173,7 @@ const i18n = {
     err_SILENCE: "This file contains only silence. Try a different recording.",
     err_CORRUPT: "Could not read this file. It may be corrupted or use an unsupported format.",
     err_NO_AUDIO_CONTEXT: "Your browser does not support audio decoding. Try a current version of Firefox, Chrome, or Safari.",
-    infoSourceUploaded: (f) => `is the uploaded WAV signal (estimated highest frequency ${f} Hz).`,
+    infoSourceUploaded: (sr, dur) => `is your uploaded WAV (${(sr / 1000).toFixed(1)} kHz, ${dur.toFixed(1)}s). Use the overview to navigate, then drag the middle view to zoom in. f_max = ${(sr / 2 / 1000).toFixed(1)} kHz, Nyquist rate = ${(sr / 1000).toFixed(1)} kHz.`,
   },
   fi: {
     title: "Nyquistin\u2013Shannonin n\u00e4ytteenottoteoreema",
@@ -236,7 +208,7 @@ const i18n = {
     err_SILENCE: "T\u00e4m\u00e4 tiedosto sis\u00e4lt\u00e4\u00e4 vain hiljaisuutta. Kokeile toista tallennetta.",
     err_CORRUPT: "Tiedostoa ei voitu lukea. Se voi olla vioittunut tai k\u00e4ytt\u00e4\u00e4 tukeamatonta muotoa.",
     err_NO_AUDIO_CONTEXT: "Selaimesi ei tue \u00e4\u00e4nen purkamista. Kokeile uusinta Firefox-, Chrome- tai Safari-versiota.",
-    infoSourceUploaded: (f) => `on ladattu WAV-signaali (arvioitu korkein taajuus ${f} Hz).`,
+    infoSourceUploaded: (sr, dur) => `on ladattu WAV-tiedostosi (${(sr / 1000).toFixed(1)} kHz, ${dur.toFixed(1)}s). K\u00e4yt\u00e4 yleiskuvaa navigointiin, vedä keskimmäistä näkymää lähentääksesi. f_max = ${(sr / 2 / 1000).toFixed(1)} kHz, Nyquist-taajuus = ${(sr / 1000).toFixed(1)} kHz.`,
   },
 };
 
@@ -295,31 +267,44 @@ const focusHandlers = (accentColor) => ({
 });
 
 export default function NyquistDemo() {
+  const mapCanvasRef = useRef(null);
   const canvasRef = useRef(null);
+  const zoomCanvasRef = useRef(null);
   const evaluatorRef = useRef(null);
   const fileInputRef = useRef(null);
+  const segDragRef = useRef({ dragging: false, startX: 0 });
+  const mapDragRef = useRef({ dragging: false, startX: 0 });
   const [signal, setSignal] = useState(() => generateSignal());
   const [sampleRate, setSampleRate] = useState(4);
-  const [duration] = useState(3);
+  const [duration, setDuration] = useState(3);
   const [lang, setLang] = useState("en");
   const [mode, setMode] = useState("dark");
   const [uploadState, setUploadState] = useState({ status: "idle", fileName: null, errorCode: null });
   const [uploadedMaxFreq, setUploadedMaxFreq] = useState(null);
+  const [uploadedWavInfo, setUploadedWavInfo] = useState(null);
+  const [segmentStart, setSegmentStart] = useState(0);
+  const [fullDuration, setFullDuration] = useState(null);
+  const [zoomRange, setZoomRange] = useState([0, 0.2]);
 
   const loc = i18n[lang];
   const th = themes[mode];
 
+  const isWavMode = uploadState.status === "loaded" && uploadedMaxFreq !== null;
   const activeMaxFreq = uploadedMaxFreq ?? signal.maxFreq;
   const nyquistRate = activeMaxFreq * 2;
-  const sliderMax = Math.max(40, Math.ceil(nyquistRate * 2 + 2));
-  const isSufficient = sampleRate >= nyquistRate - 0.01;
+  const isSufficient = sampleRate >= nyquistRate - (isWavMode ? nyquistRate * 0.001 : 0.01);
+
+  // Logarithmic slider for WAV (huge frequency range), linear for generated signals
+  const wavSliderMin = Math.max(200, nyquistRate * 0.01);
+  const wavSliderMax = nyquistRate * 1.25;
+  const logToRate = (v) => wavSliderMin * Math.pow(wavSliderMax / wavSliderMin, v / 1000);
+  const rateToLog = (r) => 1000 * Math.log(Math.max(r, wavSliderMin) / wavSliderMin) / Math.log(wavSliderMax / wavSliderMin);
   const status = isSufficient ? "converged" : "under";
 
   const waveColor = isSufficient ? th.accent : th.error;
   const focus = focusHandlers(th.accent);
 
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
+  const drawCanvas = useCallback((canvas, tStart, tEnd, showLegend, highlightRange) => {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
@@ -329,6 +314,7 @@ export default function NyquistDemo() {
     ctx.scale(dpr, dpr);
     const W = rect.width;
     const H = rect.height;
+    const viewDuration = tEnd - tStart;
 
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = th.canvasBg;
@@ -339,9 +325,10 @@ export default function NyquistDemo() {
     const plotH = H - padT - padB;
     const midY = padT + plotH / 2;
 
-    const toX = (v) => padL + (v / duration) * plotW;
+    const toX = (v) => padL + ((v - tStart) / viewDuration) * plotW;
     const toY = (v) => midY - v * (plotH * 0.4);
 
+    // Grid
     ctx.strokeStyle = th.gridLine;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -355,48 +342,75 @@ export default function NyquistDemo() {
       ctx.lineTo(W - padR, toY(v));
       ctx.stroke();
     }
-    for (let tt = 0; tt <= duration; tt += 0.5) {
+
+    // Time grid — pick a nice step for the view duration
+    const rawStep = viewDuration / 6;
+    const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const nice = [1, 2, 5, 10].find(n => n * mag >= rawStep) * mag;
+    const gridStart = Math.ceil(tStart / nice) * nice;
+    for (let tt = gridStart; tt <= tEnd + nice * 0.001; tt += nice) {
       ctx.beginPath();
       ctx.moveTo(toX(tt), padT);
       ctx.lineTo(toX(tt), H - padB);
       ctx.stroke();
     }
 
+    // Time labels
     ctx.fillStyle = th.textFaintest;
     ctx.font = `10px ${FONT_STACK}`;
     ctx.textAlign = "center";
-    for (let tt = 0; tt <= duration; tt += 0.5) {
-      ctx.fillText(tt.toFixed(1) + "s", toX(tt), H - padB + 14);
+    const useMs = viewDuration < 0.5;
+    for (let tt = gridStart; tt <= tEnd + nice * 0.001; tt += nice) {
+      const label = useMs ? (tt * 1000).toFixed(1) + "ms" : tt.toFixed(2) + "s";
+      ctx.fillText(label, toX(tt), H - padB + 14);
+    }
+
+    // Highlight zoom selection on overview canvas
+    if (highlightRange) {
+      const [hStart, hEnd] = highlightRange;
+      const x0 = toX(hStart);
+      const x1 = toX(hEnd);
+      ctx.fillStyle = th.accent + "18";
+      ctx.fillRect(x0, padT, x1 - x0, plotH);
+      ctx.strokeStyle = th.accent + "66";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x0, padT, x1 - x0, plotH);
     }
 
     const evaluate = evaluatorRef.current || makeEvaluator(signal);
 
-    const step = duration / (plotW * 2);
+    // Original waveform
+    const step = viewDuration / (plotW * 2);
     ctx.beginPath();
     ctx.strokeStyle = th.originalWave;
     ctx.lineWidth = 3;
-    for (let tt = 0; tt <= duration; tt += step) {
+    for (let tt = tStart; tt <= tEnd; tt += step) {
       const x = toX(tt);
       const y = toY(evaluate(tt));
-      tt === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      tt === tStart ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
     ctx.stroke();
 
+    // Sampling and reconstruction
     const samplePeriod = 1 / sampleRate;
-    const padSamples = 500;
-    const startSample = -padSamples;
-    const endSample = Math.ceil(duration / samplePeriod) + padSamples;
-    const allSamples = [];
-    const allSampleTimes = [];
+    const SINC_WINDOW = 64;
+    const firstSample = Math.floor(tStart / samplePeriod);
+    const lastSample = Math.ceil(tEnd / samplePeriod);
+    const margin = SINC_WINDOW;
+    const startSample = firstSample - margin;
+    const endSample = lastSample + margin;
+    const sampleValues = new Float32Array(endSample - startSample + 1);
     for (let ii = startSample; ii <= endSample; ii++) {
-      allSampleTimes.push(ii * samplePeriod);
-      allSamples.push(evaluate(ii * samplePeriod));
+      sampleValues[ii - startSample] = evaluate(ii * samplePeriod);
     }
 
-    const reconstructPadded = (tt) => {
+    const reconstruct = (tt) => {
+      const center = tt / samplePeriod;
+      const lo = Math.max(startSample, Math.floor(center) - SINC_WINDOW);
+      const hi = Math.min(endSample, Math.ceil(center) + SINC_WINDOW);
       let val = 0;
-      for (let ii = 0; ii < allSamples.length; ii++) {
-        val += allSamples[ii] * sinc((tt - allSampleTimes[ii]) / samplePeriod);
+      for (let ii = lo; ii <= hi; ii++) {
+        val += sampleValues[ii - startSample] * sinc((tt - ii * samplePeriod) / samplePeriod);
       }
       return val;
     };
@@ -405,47 +419,133 @@ export default function NyquistDemo() {
     ctx.beginPath();
     ctx.strokeStyle = canvasWaveColor;
     ctx.lineWidth = 2;
-    for (let tt = 0; tt <= duration; tt += step) {
+    for (let tt = tStart; tt <= tEnd; tt += step) {
       const x = toX(tt);
-      const y = toY(reconstructPadded(tt));
-      tt === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      const y = toY(reconstruct(tt));
+      tt === tStart ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    const numVisible = Math.floor(duration / samplePeriod) + 1;
-    for (let ii = 0; ii < numVisible; ii++) {
-      const tt = ii * samplePeriod;
-      if (tt > duration) break;
-      const x = toX(tt);
-      const y = toY(evaluate(tt));
-      ctx.beginPath();
-      ctx.strokeStyle = th.stemColor;
-      ctx.lineWidth = 1;
-      ctx.moveTo(x, midY);
-      ctx.lineTo(x, y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.fillStyle = th.dotFill;
-      ctx.strokeStyle = canvasWaveColor;
-      ctx.lineWidth = 2;
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+    // Sample dots — only when sparse enough to see
+    const numInView = Math.floor(viewDuration / samplePeriod) + 1;
+    if (numInView <= Math.floor(plotW / 4)) {
+      const visStart = Math.max(0, firstSample);
+      const visEnd = lastSample;
+      for (let ii = visStart; ii <= visEnd; ii++) {
+        const tt = ii * samplePeriod;
+        if (tt < tStart || tt > tEnd) continue;
+        const x = toX(tt);
+        const y = toY(evaluate(tt));
+        ctx.beginPath();
+        ctx.strokeStyle = th.stemColor;
+        ctx.lineWidth = 1;
+        ctx.moveTo(x, midY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.fillStyle = th.dotFill;
+        ctx.strokeStyle = canvasWaveColor;
+        ctx.lineWidth = 2;
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
     }
 
-    ctx.font = `12px ${FONT_STACK}`;
-    ctx.textAlign = "left";
-    const legX = padL + 12;
-    const legY = padT + 16;
-    ctx.fillStyle = th.originalWave;
-    ctx.fillRect(legX - 16, legY - 4, 10, 3);
-    ctx.fillStyle = th.legendText;
-    ctx.fillText(loc.legendOriginal, legX, legY);
-    ctx.fillStyle = canvasWaveColor;
-    ctx.fillRect(legX - 16, legY + 16, 10, 3);
-    ctx.fillStyle = th.legendText;
-    ctx.fillText(loc.legendReconstructed, legX, legY + 20);
-  }, [signal, sampleRate, duration, isSufficient, th, loc]);
+    // Legend
+    if (showLegend) {
+      ctx.font = `12px ${FONT_STACK}`;
+      ctx.textAlign = "left";
+      const legX = padL + 12;
+      const legY = padT + 16;
+      ctx.fillStyle = th.originalWave;
+      ctx.fillRect(legX - 16, legY - 4, 10, 3);
+      ctx.fillStyle = th.legendText;
+      ctx.fillText(loc.legendOriginal, legX, legY);
+      ctx.fillStyle = canvasWaveColor;
+      ctx.fillRect(legX - 16, legY + 16, 10, 3);
+      ctx.fillStyle = th.legendText;
+      ctx.fillText(loc.legendReconstructed, legX, legY + 20);
+    }
+  }, [signal, sampleRate, isSufficient, th, loc]);
+
+  const drawMap = useCallback((canvas) => {
+    if (!canvas || !fullDuration) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width;
+    const H = rect.height;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = th.canvasBg;
+    ctx.fillRect(0, 0, W, H);
+
+    const padL = 40, padR = 20, padT = 12, padB = 24;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+    const midY = padT + plotH / 2;
+
+    const toX = (v) => padL + (v / fullDuration) * plotW;
+    const toY = (v) => midY - v * (plotH * 0.4);
+
+    // Zero line
+    ctx.strokeStyle = th.gridLine;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, midY);
+    ctx.lineTo(W - padR, midY);
+    ctx.stroke();
+
+    // Time labels
+    ctx.fillStyle = th.textFaintest;
+    ctx.font = `10px ${FONT_STACK}`;
+    ctx.textAlign = "center";
+    const rawStep = fullDuration / 6;
+    const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const nice = [1, 2, 5, 10].find(n => n * mag >= rawStep) * mag;
+    for (let tt = 0; tt <= fullDuration + nice * 0.001; tt += nice) {
+      ctx.fillText(tt.toFixed(1) + "s", toX(tt), H - padB + 14);
+    }
+
+    // Highlight 3s segment region
+    const x0 = toX(segmentStart);
+    const x1 = toX(Math.min(segmentStart + duration, fullDuration));
+    ctx.fillStyle = th.accent + "18";
+    ctx.fillRect(x0, padT, x1 - x0, plotH);
+    ctx.strokeStyle = th.accent + "66";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0, padT, x1 - x0, plotH);
+
+    // Waveform
+    const evaluate = evaluatorRef.current;
+    if (!evaluate) return;
+    const step = fullDuration / (plotW * 2);
+    ctx.beginPath();
+    ctx.strokeStyle = th.originalWave;
+    ctx.lineWidth = 1.5;
+    let first = true;
+    for (let tt = 0; tt <= fullDuration; tt += step) {
+      const x = toX(tt);
+      const y = toY(evaluate(tt));
+      first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      first = false;
+    }
+    ctx.stroke();
+  }, [fullDuration, segmentStart, duration, th]);
+
+  const draw = useCallback(() => {
+    if (isWavMode) {
+      drawMap(mapCanvasRef.current);
+      drawCanvas(canvasRef.current, segmentStart, segmentStart + duration, true, zoomRange);
+      drawCanvas(zoomCanvasRef.current, zoomRange[0], zoomRange[1], false, null);
+    } else {
+      drawCanvas(canvasRef.current, 0, duration, true, null);
+    }
+  }, [drawCanvas, drawMap, duration, isWavMode, segmentStart, zoomRange]);
 
   useEffect(() => {
     draw();
@@ -454,18 +554,74 @@ export default function NyquistDemo() {
     return () => window.removeEventListener("resize", onResize);
   }, [draw]);
 
+  // Convert canvas pixel X to a time value within a given range
+  const canvasToTime = (canvas, clientX, tStart, tEnd) => {
+    const rect = canvas.getBoundingClientRect();
+    const padL = 40, padR = 20;
+    const plotW = rect.width - padL - padR;
+    const relX = clientX - rect.left - padL;
+    return Math.max(tStart, Math.min(tEnd, tStart + (relX / plotW) * (tEnd - tStart)));
+  };
+
+  // Drag on segment canvas → select zoom range
+  const segEnd = segmentStart + duration;
+  const onSegMouseDown = (e) => {
+    if (!isWavMode) return;
+    const t = canvasToTime(canvasRef.current, e.clientX, segmentStart, segEnd);
+    segDragRef.current = { dragging: true, startX: t };
+  };
+  const onSegMouseMove = (e) => {
+    if (!segDragRef.current.dragging) return;
+    const t = canvasToTime(canvasRef.current, e.clientX, segmentStart, segEnd);
+    const s = segDragRef.current.startX;
+    const lo = Math.min(s, t);
+    const hi = Math.max(s, t);
+    if (hi - lo > 0.0001) setZoomRange([lo, hi]);
+  };
+  const onSegMouseUp = () => { segDragRef.current.dragging = false; };
+
+  // Drag on map canvas → position the 3s segment window
+  const onMapMouseDown = (e) => {
+    if (!fullDuration) return;
+    mapDragRef.current = { dragging: true };
+    const t = canvasToTime(mapCanvasRef.current, e.clientX, 0, fullDuration);
+    const maxStart = Math.max(0, fullDuration - duration);
+    const newStart = Math.max(0, Math.min(maxStart, t - duration / 2));
+    setSegmentStart(newStart);
+    setZoomRange([newStart, newStart + Math.min(0.2, duration)]);
+  };
+  const onMapMouseMove = (e) => {
+    if (!mapDragRef.current.dragging || !fullDuration) return;
+    const t = canvasToTime(mapCanvasRef.current, e.clientX, 0, fullDuration);
+    const maxStart = Math.max(0, fullDuration - duration);
+    const newStart = Math.max(0, Math.min(maxStart, t - duration / 2));
+    setSegmentStart(newStart);
+    setZoomRange([newStart, newStart + Math.min(0.2, duration)]);
+  };
+  const onMapMouseUp = () => { mapDragRef.current.dragging = false; };
+
   const handleFile = async (file) => {
     if (!file) return;
     setUploadState({ status: "processing", fileName: file.name, errorCode: null });
     try {
       const result = await processWavFile(file);
-      evaluatorRef.current = makeInterpolatedEvaluator(result.samples, result.evalSampleRate, result.duration);
+      evaluatorRef.current = makeInterpolatedEvaluator(result.samples, result.sampleRate, result.fullDuration);
+      const segDur = Math.min(3, result.fullDuration);
+      setFullDuration(result.fullDuration);
+      setDuration(segDur);
+      setSegmentStart(0);
+      setZoomRange([0, Math.min(0.2, segDur)]);
       setUploadedMaxFreq(result.maxFreq);
-      setSampleRate(Math.max(1, result.maxFreq * 1.5));
+      setUploadedWavInfo({
+        originalSampleRate: result.sampleRate,
+        originalDuration: result.fullDuration,
+      });
+      setSampleRate(result.maxFreq * 0.3);
       setUploadState({ status: "loaded", fileName: result.fileName, errorCode: null });
     } catch (err) {
       evaluatorRef.current = null;
       setUploadedMaxFreq(null);
+      setUploadedWavInfo(null);
       const code = err instanceof WavError ? err.code : "CORRUPT";
       setUploadState({ status: "error", fileName: file.name, errorCode: code });
     }
@@ -474,7 +630,12 @@ export default function NyquistDemo() {
   const clearUpload = () => {
     evaluatorRef.current = null;
     setUploadedMaxFreq(null);
+    setUploadedWavInfo(null);
     setUploadState({ status: "idle", fileName: null, errorCode: null });
+    setFullDuration(null);
+    setSegmentStart(0);
+    setDuration(3);
+    setSampleRate(4);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -574,6 +735,11 @@ export default function NyquistDemo() {
             fontFamily: "inherit",
           }}>
             <span style={{ color: th.accent, fontWeight: 500 }}>{uploadState.fileName}</span>
+            {uploadedWavInfo && (
+              <span style={{ color: th.textFaintest, fontSize: 11, marginLeft: 8 }}>
+                {(uploadedWavInfo.originalSampleRate / 1000).toFixed(1)} kHz &middot; {uploadedWavInfo.originalDuration.toFixed(1)}s
+              </span>
+            )}
             <span style={{ flex: 1 }} />
             <button
               onClick={clearUpload}
@@ -640,6 +806,26 @@ export default function NyquistDemo() {
           </label>
         )}
 
+        {isWavMode && (
+          <canvas
+            ref={mapCanvasRef}
+            role="img"
+            aria-label={`Full audio overview. ${fullDuration?.toFixed(1)}s total.`}
+            onMouseDown={onMapMouseDown}
+            onMouseMove={onMapMouseMove}
+            onMouseUp={onMapMouseUp}
+            onMouseLeave={onMapMouseUp}
+            style={{
+              width: "100%",
+              height: 120,
+              borderRadius: 8,
+              border: `1px solid ${th.border}`,
+              marginBottom: 12,
+              cursor: "pointer",
+            }}
+          />
+        )}
+
         <canvas
           ref={canvasRef}
           role="img"
@@ -649,13 +835,33 @@ export default function NyquistDemo() {
               ? "Waveform visualization. Perfect reconstruction achieved."
               : "Waveform visualization. Aliasing \u2014 signal cannot be reconstructed.")
           }
+          onMouseDown={onSegMouseDown}
+          onMouseMove={onSegMouseMove}
+          onMouseUp={onSegMouseUp}
+          onMouseLeave={onSegMouseUp}
           style={{
             width: "100%",
             height: 320,
             borderRadius: 8,
             border: `1px solid ${th.border}`,
+            cursor: isWavMode ? "crosshair" : "default",
           }}
         />
+
+        {isWavMode && (
+          <canvas
+            ref={zoomCanvasRef}
+            role="img"
+            aria-label={`Zoomed view from ${(zoomRange[0] * 1000).toFixed(1)}ms to ${(zoomRange[1] * 1000).toFixed(1)}ms`}
+            style={{
+              width: "100%",
+              height: 320,
+              borderRadius: 8,
+              border: `1px solid ${th.border}`,
+              marginTop: 12,
+            }}
+          />
+        )}
 
         <div style={{
           marginTop: 24,
@@ -729,24 +935,39 @@ export default function NyquistDemo() {
             marginBottom: 8,
           }}>
             <label htmlFor="sample-rate-slider" style={{ fontSize: 12, color: th.textMuted }}>
-              {loc.sampleRate}: <span style={{ color: th.accent, fontWeight: 600 }}>{sampleRate.toFixed(1)} Hz</span>
+              {loc.sampleRate}: <span style={{ color: th.accent, fontWeight: 600 }}>{formatHz(sampleRate)}</span>
             </label>
             <span style={{ fontSize: 11, color: th.textFaintest }}>
-              f<sub>max</sub> = {activeMaxFreq.toFixed(1)} Hz &rarr; {loc.nyquistLabel} = {nyquistRate.toFixed(1)} Hz
+              f<sub>max</sub> = {formatHz(activeMaxFreq)} &rarr; {loc.nyquistLabel} = {formatHz(nyquistRate)}
             </span>
           </div>
-          <input
-            id="sample-rate-slider"
-            type="range"
-            min={1}
-            max={sliderMax}
-            step={0.2}
-            value={sampleRate}
-            onChange={(e) => setSampleRate(parseFloat(e.target.value))}
-            aria-valuetext={`${sampleRate.toFixed(1)} Hz`}
-            style={{ width: "100%", accentColor: th.accent, cursor: "pointer" }}
-            {...focus}
-          />
+          {isWavMode ? (
+            <input
+              id="sample-rate-slider"
+              type="range"
+              min={0}
+              max={1000}
+              step={1}
+              value={rateToLog(sampleRate)}
+              onChange={(e) => setSampleRate(logToRate(parseFloat(e.target.value)))}
+              aria-valuetext={formatHz(sampleRate)}
+              style={{ width: "100%", accentColor: th.accent, cursor: "pointer" }}
+              {...focus}
+            />
+          ) : (
+            <input
+              id="sample-rate-slider"
+              type="range"
+              min={1}
+              max={40}
+              step={0.2}
+              value={sampleRate}
+              onChange={(e) => setSampleRate(parseFloat(e.target.value))}
+              aria-valuetext={`${sampleRate.toFixed(1)} Hz`}
+              style={{ width: "100%", accentColor: th.accent, cursor: "pointer" }}
+              {...focus}
+            />
+          )}
           <div style={{
             display: "flex",
             justifyContent: "space-between",
@@ -754,15 +975,15 @@ export default function NyquistDemo() {
             color: th.textFaintest,
             marginTop: 4,
           }}>
-            <span>1 Hz</span>
+            <span>{isWavMode ? formatHz(wavSliderMin) : "1 Hz"}</span>
             <span style={{
               color: !isSufficient ? th.accent : `${th.success}44`,
               fontWeight: !isSufficient ? 600 : 400,
               transition: "all 0.3s",
             }}>
-              <span aria-hidden="true">&#9650;</span> {nyquistRate.toFixed(1)} Hz (Nyquist)
+              <span aria-hidden="true">&#9650;</span> {formatHz(nyquistRate)} (Nyquist)
             </span>
-            <span>{sliderMax} Hz</span>
+            <span>{isWavMode ? formatHz(wavSliderMax) : "40 Hz"}</span>
           </div>
         </div>
 
@@ -779,8 +1000,8 @@ export default function NyquistDemo() {
         }}>
           <div>
             <span style={{ color: th.textMuted }}>{loc.infoGray}</span>
-            {" "}{uploadState.status === "loaded"
-              ? loc.infoSourceUploaded(activeMaxFreq.toFixed(1))
+            {" "}{uploadState.status === "loaded" && uploadedWavInfo
+              ? loc.infoSourceUploaded(uploadedWavInfo.originalSampleRate, uploadedWavInfo.originalDuration)
               : loc.infoOriginal(signal.components.length, signal.maxFreq.toFixed(1))}
             {" "}<span style={{ color: th.textMuted }}>{loc.infoReconstructed(!isSufficient ? loc.red : loc.orange)}</span>
             {" "}{loc.infoRest(nyquistRate.toFixed(1))}
